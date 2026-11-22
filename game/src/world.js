@@ -61,6 +61,8 @@ export function createWorld(seed) {
     alarmFlash: 0,
     suspicion: 0, // the highest suspicion of any guard — the HUD eye reads this
     suspicionFlash: 0, // 1 right after a near miss crosses the suspect line
+    nearMisses: 0, // run total: guards that got suspicious, then calmed down unalarmed
+    nearMissT: 0, // seconds the NEAR MISS callout stays up after one is counted
     pebbles: 3,
     shake: 0, // screen-shake trauma, 0..1 — decays, never snaps back
     camX: 640, // the camera drift: eases toward the thief, never snaps
@@ -114,6 +116,8 @@ export function loadLevel(world, index) {
 export function startGame(world) {
   world.score = 0;
   world.time = 0;
+  world.nearMisses = 0;
+  world.nearMissT = 0;
   loadLevel(world, 0);
   world.screen = SCREEN_PLAY;
   world.screenT = 0;
@@ -219,6 +223,7 @@ export function stepWorld(world, dt, input, audio) {
   world.time += dt;
   world.screenT += dt;
   if (world.suspicionFlash > 0) world.suspicionFlash = Math.max(0, world.suspicionFlash - dt * 1.6);
+  if (world.nearMissT > 0) world.nearMissT = Math.max(0, world.nearMissT - dt);
   if (world.alarmFlash > 0) world.alarmFlash = Math.max(0, world.alarmFlash - dt * 1.2);
   if (world.shake > 0) world.shake = Math.max(0, world.shake - SHAKE.decayPerSec * dt);
 
@@ -341,6 +346,8 @@ export function stepWorld(world, dt, input, audio) {
         g.lastKnown = heard.tile;
         g.state = 'investigate';
         g.stateT = 0;
+        g.bark = 'Did you hear that?';
+        g.barkT = 2.5;
       }
     }
     const near = Math.hypot(g.x - p.x, g.y - p.y);
@@ -356,12 +363,16 @@ export function stepWorld(world, dt, input, audio) {
       if (before < GUARD.suspectAt && g.suspicion >= GUARD.suspectAt && g.state === 'patrol') {
         g.state = 'suspicious';
         g.stateT = 0;
+        g.bark = "Who's there?";
+        g.barkT = 2.5;
         world.suspicionFlash = 1;
         world.shake = Math.max(world.shake, SHAKE.suspect); // the near miss jolts
         spawnRing(world.particles, g.x, g.y, 'rgba(255, 180, 60, 0.85)');
         world.events.push('suspect');
       }
       if (g.suspicion >= GUARD.alertAt && g.state !== 'alert') {
+        g.bark = 'Stop right there!';
+        g.barkT = 2.5;
         raiseAlarm(world, g, audio);
       }
     } else if (g.state === 'patrol' || g.state === 'suspicious' || g.state === 'search') {
@@ -370,6 +381,13 @@ export function stepWorld(world, dt, input, audio) {
       // is real and not just a patrol-state accident.
       g.suspicion = Math.max(0, g.suspicion - GUARD.fallPerSec * dt);
       if (g.state === 'suspicious' && g.suspicion < 0.1) {
+        // The guard was suspicious, looked, found nothing, and calmed down
+        // without ever raising the alarm: that is a near miss, and it is
+        // worth counting — a ghost run is measured in the ones that got away.
+        world.nearMisses += 1;
+        world.nearMissT = 3;
+        g.bark = "Must've been nothing.";
+        g.barkT = 2.5;
         g.state = 'return';
         g.stateT = 0;
       }

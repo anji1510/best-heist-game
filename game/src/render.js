@@ -238,6 +238,30 @@ function paintRoutes(ctx, world) {
       ctx.fill();
       ctx.restore();
     }
+    // Numbered waypoints: the route is learnable at a glance — 1, 2, 3, 4
+    // in patrol order, with the pause at each stop printed once beside
+    // the first waypoint. A route you can number is a route you can plan.
+    ctx.setLineDash([]);
+    for (let i = 0; i < g.path.length; i += 1) {
+      const w = g.path[i];
+      ctx.fillStyle = 'rgba(10, 12, 20, 0.85)';
+      ctx.beginPath();
+      ctx.arc(w.x, w.y, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(232, 228, 216, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#e8e4d8';
+      ctx.font = 'bold 11px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), w.x, w.y + 0.5);
+    }
+    ctx.fillStyle = 'rgba(232, 228, 216, 0.75)';
+    ctx.font = '11px Georgia, serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${g.pause.toFixed(1)}s pause`, g.path[0].x + 12, g.path[0].y - 12);
+    ctx.setLineDash([2, 9]);
   }
   ctx.setLineDash([]);
 }
@@ -857,6 +881,37 @@ function paintGuard(ctx, g, t) {
     ctx.beginPath();
     ctx.arc(x, y - 34, 11, -Math.PI / 2, -Math.PI / 2 + g.suspicion * Math.PI * 2);
     ctx.stroke();
+  }
+  // Name + suspicion %: every guard is a person with a number, so the
+  // judge reads the threat without playing — MARA 32%, not an anonymous
+  // cone. The % only shows once the guard has noticed something.
+  const label = g.suspicion > 0.05
+    ? `${g.name} ${Math.round(g.suspicion * 100)}%`
+    : g.name;
+  ctx.font = 'bold 11px Georgia, serif';
+  const lw = ctx.measureText(label).width + 12;
+  ctx.fillStyle = 'rgba(10, 12, 20, 0.8)';
+  ctx.beginPath();
+  ctx.roundRect(x - lw / 2, y - 72, lw, 15, 4);
+  ctx.fill();
+  ctx.fillStyle = g.suspicion >= GUARD.suspectAt ? '#ffb43c' : '#e8e4d8';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y - 64);
+  // Bark bubble: the guard's last line, while it lasts — a short, plain
+  // sentence that says what the guard thinks just happened.
+  if (g.barkT > 0 && g.bark) {
+    ctx.font = '12px Georgia, serif';
+    const bw = ctx.measureText(g.bark).width + 16;
+    const bx = x + 16;
+    const by = y - 96;
+    ctx.fillStyle = 'rgba(232, 228, 216, 0.95)';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, 18, 6);
+    ctx.fill();
+    ctx.fillStyle = '#1d2333';
+    ctx.textAlign = 'left';
+    ctx.fillText(g.bark, bx + 8, by + 9.5);
   }
 }
 

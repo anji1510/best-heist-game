@@ -62,10 +62,16 @@ export function stageCover(world) {
   // enough to read, far enough that he is unseen.
   poseSearchlight(world.searchlights[0], -0.37);
   // The patrol guard stands clear of the wall, cone sweeping south-east
-  // straight over the crates Rook is crouched behind.
-  guardAt(world, 0, 12 * 32 + 16, 7 * 32 + 16, 0.35, 'patrol', 0.08);
+  // straight over the crates Rook is crouched behind — and he has just
+  // noticed something: MARA is suspicious, "?" over her head, bark up,
+  // meter at 32%. The cover frame shows the whole detection language at
+  // once: a named guard, a number, a question, and a thief unseen — the
+  // near miss, frozen a beat before it resolves.
+  guardAt(world, 0, 12 * 32 + 16, 7 * 32 + 16, 0.35, 'suspicious', 0.32);
+  world.guards[0].bark = "Who's there?";
+  world.guards[0].barkT = 2.5;
   guardAt(world, 1, 33 * 32 + 16, 13 * 32 + 16, Math.PI, 'patrol', 0);
-  world.suspicion = 0.08;
+  world.suspicion = 0.32;
   return { screen: SCREEN_PLAY };
 }
 

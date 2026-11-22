@@ -20,8 +20,8 @@ const BORDER = [
 
 export const LEVELS = [
   {
-    name: 'THE LOBBY',
-    sub: 'Room 1 — learn the patrols',
+    name: 'JOB 1 — THE LOBBY',
+    sub: 'Job 1 of 3 — learn the patrols',
     hint: 'A skylight searchlight sweeps the lobby. Time the beam, use the shadows — find the manager\u2019s keycard, then slip out the stair door.',
     walls: [
       ...BORDER,
@@ -48,8 +48,8 @@ export const LEVELS = [
       { x: 10, y: 11, text: 'LOBBY' },
     ],
     guards: [
-      { path: [p(5, 5), p(13, 5), p(13, 11), p(5, 11)], pause: 1.3 },
-      { path: [p(25, 15), p(33, 15), p(33, 9), p(25, 9)], pause: 1.1 },
+      { name: 'MARA', path: [p(5, 5), p(13, 5), p(13, 11), p(5, 11)], pause: 1.3 },
+      { name: 'BRAM', path: [p(25, 15), p(33, 15), p(33, 9), p(25, 9)], pause: 1.1 },
     ],
     loot: [p(20, 10), p(5, 4), p(35, 17), p(35, 5), p(21, 6)], // a fifth bundle on the red runner, inside the searchlight's sweep — crossing the light pays
     keycard: p(26, 17),
@@ -57,8 +57,8 @@ export const LEVELS = [
     player: p(3, 19),
   },
   {
-    name: 'THE GALLERY',
-    sub: 'Room 2 — the marble hall',
+    name: 'JOB 2 — THE GALLERY',
+    sub: 'Job 2 of 3 — the marble hall',
     hint: 'The gallery is wide open. Use the display cases and the blue carpet — watch the middle guard, and time the laser grid on the carpet.',
     walls: [
       ...BORDER,
@@ -78,9 +78,9 @@ export const LEVELS = [
       { x: 33, y: 5, text: 'EAST WING' },
     ],
     guards: [
-      { path: [p(4, 4), p(10, 4), p(10, 8), p(4, 8)], pause: 1.2 },
-      { path: [p(16, 16), p(24, 16), p(24, 8), p(16, 8)], pause: 1.0 },
-      { path: [p(28, 4), p(36, 4), p(36, 18), p(28, 18)], pause: 0.8 },
+      { name: 'IVAN', path: [p(4, 4), p(10, 4), p(10, 8), p(4, 8)], pause: 1.2 },
+      { name: 'PETRA', path: [p(16, 16), p(24, 16), p(24, 8), p(16, 8)], pause: 1.0 },
+      { name: 'OSKAR', path: [p(28, 4), p(36, 4), p(36, 18), p(28, 18)], pause: 0.8 },
     ],
     // Three laser tripwires across the blue carpet — vertical beams at tile
     // x 28, 30 and 32, spanning the carpet band (tiles y 9–11). They blink
@@ -106,8 +106,8 @@ export const LEVELS = [
     player: p(2, 20),
   },
   {
-    name: 'THE VAULT',
-    sub: 'Room 3 — the last door',
+    name: 'JOB 3 — THE VAULT',
+    sub: 'Job 3 of 3 — the last door',
     hint: 'Four guards, two cameras, and the vault itself. Crack the dial with the keycard — three tumblers, SPACE on the green — then grab the gold and run for the van before the police arrive.',
     walls: [
       ...BORDER,
@@ -141,10 +141,10 @@ export const LEVELS = [
       { x: 6, y: 12, text: 'WEST WING' },
     ],
     guards: [
-      { path: [p(4, 8), p(8, 8), p(8, 16), p(4, 16)], pause: 1.1 },
-      { path: [p(14, 4), p(18, 4), p(18, 10), p(14, 10)], pause: 1.0 },
-      { path: [p(24, 14), p(30, 14), p(30, 18), p(24, 18)], pause: 0.9 },
-      { path: [p(34, 6)], pause: 2.6, scan: true }, // the watcher: stands, scans, turns away
+      { name: 'DORIN', path: [p(4, 8), p(8, 8), p(8, 16), p(4, 16)], pause: 1.1 },
+      { name: 'SABLE', path: [p(14, 4), p(18, 4), p(18, 10), p(14, 10)], pause: 1.0 },
+      { name: 'VIK', path: [p(24, 14), p(30, 14), p(30, 18), p(24, 18)], pause: 0.9 },
+      { name: 'REN', path: [p(34, 6)], pause: 2.6, scan: true }, // the watcher: stands, scans, turns away
     ],
     // Two wall cameras guard the vault hall. CAM-1 hangs just under the
     // north vault wall and sweeps the hall south; CAM-2 sits on the east

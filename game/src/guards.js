@@ -35,6 +35,9 @@ export function createGuard(def, index) {
     : -Math.PI / 2;
   return {
     index,
+    name: def.name ?? 'GUARD',
+    bark: '', // the guard's last spoken line — a state change, never random
+    barkT: 0, // seconds the bark stays up, decayed by the step below
     x: first.x,
     y: first.y,
     facing: startFacing,
@@ -65,6 +68,7 @@ export function createGuard(def, index) {
 export function stepGuard(g, dt, world) {
   g.stepped = false;
   g.stateT += dt;
+  if (g.barkT > 0) g.barkT = Math.max(0, g.barkT - dt);
   g.bob += dt * (g.state === 'alert' ? 11 : 7);
   g.coneAngle = turnToward(g.coneAngle, g.facing, dt * CONE_LAG);
   switch (g.state) {

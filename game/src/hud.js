@@ -283,6 +283,15 @@ export function drawHud(ctx, world, screen, t) {
   }
   ctx.restore();
 
+  // The watch panel: the right-hand rail the judge reads without playing —
+  // the detection banner, every guard by name with state and %, the light
+  // the thief stands in, the near-miss count, and the legend for the beams.
+  const a4 = popIn(intro, staggerDelay(4, 0.07));
+  ctx.save();
+  ctx.globalAlpha = a4;
+  drawWatchPanel(ctx, world, t);
+  ctx.restore();
+
   // Camera chip: a small red flag under the eye panel while a camera beam
   // holds the thief — the warning names the watcher, not just the meter.
   if (world.camSpotted && !world.alarm) {
@@ -358,6 +367,18 @@ export function drawHud(ctx, world, screen, t) {
     ctx.lineWidth = 10;
     ctx.strokeRect(5, 5, VIEW.width - 10, VIEW.height - 10);
   }
+  // Near-miss callout: for three seconds after a guard calms down
+  // unalarmed, the frame says so — a ghost run is a labelled event,
+  // not a silent meter falling.
+  if (world.nearMissT > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, world.nearMissT);
+    ctx.fillStyle = '#f2c14e';
+    ctx.font = 'bold 18px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`NEAR MISS ×${world.nearMisses} — THEY LOST YOU`, VIEW.width / 2, 124);
+    ctx.restore();
+  }
   // Alarm banner: full-width, high contrast, impossible to miss. It slides
   // down from the top bar in 0.38 s (ease-out) instead of appearing flat.
   if (world.alarm) {
@@ -402,6 +423,56 @@ export function drawHud(ctx, world, screen, t) {
   }
 }
 
+function drawWatchPanel(ctx, world, t) {
+  const x = 1096;
+  const y = 62;
+  const w = 172;
+  const rows = world.guards.length;
+  const h = 30 + rows * 17 + 16 + 15 + 3 * 13 + 12;
+  const stateWord = (g) => ({ patrol: 'PATROL', suspicious: 'SUSP', investigate: 'INVEST', search: 'SEARCH', alert: 'ALERT', return: 'RETURN' })[g.state] ?? 'PATROL';
+  const stateColor = (g) => (g.state === 'alert' ? '#ff4a3c' : g.state === 'suspicious' ? '#ffb43c' : g.state === 'investigate' || g.state === 'search' ? '#ffd27a' : COLORS.hudDim);
+  panel(ctx, x, y, w, h, 1);
+  const banner = world.alarm ? 'ALARM' : world.suspicion >= 0.45 ? 'SUSPICIOUS' : world.suspicion > 0.05 ? 'SEEN?' : 'UNSEEN';
+  ctx.fillStyle = eyeColor(world.suspicion);
+  ctx.font = 'bold 13px Georgia, serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`WATCH — ${banner}`, x + 10, y + 15);
+  let ry = y + 32;
+  ctx.font = '11px Georgia, serif';
+  for (const g of world.guards) {
+    ctx.fillStyle = '#e8e4d8';
+    ctx.fillText(g.name, x + 10, ry);
+    ctx.fillStyle = stateColor(g);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${stateWord(g)} ${Math.round(g.suspicion * 100)}%`, x + w - 10, ry);
+    ctx.textAlign = 'left';
+    ry += 17;
+  }
+  ry += 4;
+  const light = world.inDuct ? 'IN DUCT — UNSEEN' : world.player.inShadow ? 'IN SHADOW' : 'EXPOSED';
+  ctx.fillStyle = world.inDuct || world.player.inShadow ? '#37e08a' : '#ffb43c';
+  ctx.fillText(`LIGHT: ${light}`, x + 10, ry);
+  ry += 17;
+  ctx.fillStyle = '#f2c14e';
+  ctx.fillText(`NEAR MISS ×${world.nearMisses}`, x + 10, ry);
+  ry += 17;
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = '10px Georgia, serif';
+  const legend = [
+    ['#ffd682', 'gold cone — guard'],
+    ['#ff5ac8', 'magenta — camera / laser'],
+    ['#fff6d8', 'white beam — searchlight'],
+  ];
+  for (const [col, text] of legend) {
+    ctx.fillStyle = col;
+    ctx.fillRect(x + 10, ry - 4, 8, 8);
+    ctx.fillStyle = COLORS.hudDim;
+    ctx.fillText(text, x + 22, ry);
+    ry += 13;
+  }
+}
+
 function drawCenter(ctx, title, sub, t, fade = 1) {
   ctx.save();
   ctx.globalAlpha = clamp(fade, 0, 1);
@@ -432,18 +503,24 @@ function drawTitle(ctx, world, t) {
   ctx.font = 'bold 64px Georgia, serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('MIDNIGHT VAULT', VIEW.width / 2, 250);
+  ctx.fillText('MIDNIGHT VAULT', VIEW.width / 2, 236);
   ctx.fillStyle = COLORS.hudText;
   ctx.font = '20px Georgia, serif';
-  ctx.fillText('One night. Three rooms. One vault. Get in, crack it, get out.', VIEW.width / 2, 308);
+  ctx.fillText('One night. Three rooms. One vault. Get in, crack it, get out.', VIEW.width / 2, 292);
   ctx.fillStyle = COLORS.hudDim;
   ctx.font = '16px Georgia, serif';
-  ctx.fillText('WASD / arrows — move      Shift — sneak      SPACE — crack the vault      Click — throw a pebble      P — pause', VIEW.width / 2, 352);
+  ctx.fillText('WASD / arrows — move      Shift — sneak      SPACE — crack the vault      Click — throw a pebble      P — pause', VIEW.width / 2, 336);
+  // The job list: three jobs, one line each — the campaign, on the title screen.
+  ctx.fillStyle = COLORS.hudText;
+  ctx.font = '16px Georgia, serif';
+  ctx.fillText('JOB 1 — THE LOBBY · learn the patrols', VIEW.width / 2, 372);
+  ctx.fillText('JOB 2 — THE GALLERY · time the laser grid', VIEW.width / 2, 394);
+  ctx.fillText('JOB 3 — THE VAULT · crack the dial, run for the van', VIEW.width / 2, 416);
   ctx.fillStyle = '#e8e4d8';
   ctx.font = 'bold 18px Georgia, serif';
   const blink = 0.6 + 0.4 * Math.sin(titleClock * 3);
   ctx.globalAlpha = rise * blink;
-  ctx.fillText('— press ENTER to begin —', VIEW.width / 2, 408);
+  ctx.fillText('— press ENTER to begin —', VIEW.width / 2, 462);
   ctx.restore();
 }
 
