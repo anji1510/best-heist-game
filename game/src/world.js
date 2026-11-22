@@ -14,7 +14,7 @@ import { createSearchlight, stepSearchlight, searchlightExposure } from './searc
 import { createDuct, inDuct } from './duct.js';
 import { createCrack, startCrack, stepCrack, tryLock } from './crack.js';
 import { createPlayer, stepPlayer, triggerPop } from './player.js';
-import { coneExposure, inShadow, pointInRect, hasLineOfSight } from './vision.js';
+import { inRect, inShadowAt, sampleThief, senseNoise, senseSight } from './sense.js';
 import { createParticles, spawnBurst, spawnDust, spawnGlint, spawnAlarmSparks, spawnMote, spawnPrint, spawnRing, spawnVaultOpen, stepParticles } from './particles.js';
 import { alarmSting, burstChime, cameraBeep, crackClick, crackClunk, guardStep, keycardBlip, losePhrase, pickupBlip, playerStep, proximityPulse, vaultOpenSound, winPhrase } from './audio.js';
 import { approach } from './motion.js';
@@ -71,6 +71,7 @@ export function createWorld(seed) {
     transition: 0, // room-change fade, 0..1
     particles: createParticles(seed),
     events: [],
+    pendingNoises: [], // noise events this step — heard by the guards, then cleared
     won: false,
     glintT: 0,
     moteT: 0,
@@ -133,24 +134,15 @@ export function nextLevel(world) {
   loadLevel(world, world.levelIndex + 1);
 }
 
-// Throw a pebble: the nearest guard walks over to investigate the noise.
+// Throw a pebble: it lands as a noise event on a tile. Guards that hear it
+// walk over to investigate — walls muffle it, so a pebble thrown in the
+// next room may be ignored. Nobody picks a guard for them any more; the
+// hearing decides, tile by tile.
 export function throwPebble(world, x, y, audio) {
   if (world.pebbles <= 0 || world.screen !== SCREEN_PLAY) return false;
   world.pebbles -= 1;
   world.player.pebble = { x, y, t: 0 };
-  let best = null;
-  let bestD = Infinity;
-  for (const g of world.guards) {
-    const d = Math.hypot(g.x - x, g.y - y);
-    if (d < bestD) { bestD = d; best = g; }
-  }
-  if (best && bestD < 520) {
-    best.lastKnown = { x, y };
-    if (best.state === 'patrol' || best.state === 'return') {
-      best.state = 'search';
-      best.stateT = 0;
-    }
-  }
+  world.pendingNoises.push({ x, y, loud: 1, radius: 520 });
   return true;
 }
 
@@ -253,11 +245,15 @@ export function stepWorld(world, dt, input, audio) {
   p0.inDuct = world.ducts.some((v) => inDuct(v, p0.x, p0.y));
   world.inDuct = p0.inDuct;
   // The vault: with the keycard, standing at the dial starts the crack —
-  // the thief roots to the spot and the dial takes over SPACE.
+  // the thief roots to the spot and the dial takes over SPACE. Never from
+  // inside the duct: the crack zone (72 px) reaches into the channel, and
+  // a thief who crawls into it would root to the spot mid-duct, stuck in
+  // the vent with the dial 70 px away through the wall. The dial is worked
+  // from the floor, so the crack only starts once the thief is out.
   const vault = world.level.vault;
   if (vault && world.keycardTaken && !world.vaultOpen) {
     const near = Math.hypot(p0.x - vault.x, p0.y - vault.y) < vault.r + 28;
-    if (near && !world.crack.active) {
+    if (near && !p0.inDuct && !world.crack.active) {
       startCrack(world.crack, world.rng);
       world.player.cracking = true;
     } else if (!near && world.crack.active) {
@@ -268,7 +264,7 @@ export function stepWorld(world, dt, input, audio) {
   stepPlayer(world.player, dt, input, world.level);
   stepCrack(world.crack, dt);
   const p = world.player;
-  p.inShadow = inShadow(p.x, p.y, world.level);
+  p.inShadow = inShadowAt(p.x, p.y, world.level);
   p.hidden = p.inDuct || (p.inShadow && !p.moving);
   // The camera drift eases toward the thief (critically damped — it settles,
   // never overshoots), so the frame leans into the action without ever
@@ -300,7 +296,12 @@ export function stepWorld(world, dt, input, audio) {
       world.events.push('loot');
     }
   }
-  if (!world.keycard.taken && !p.inDuct && Math.hypot(world.keycard.x - p.x, world.keycard.y - p.y) < 26) {
+  // The keycard sits on the manager's desk in the Lobby — you reach across
+  // the desk to grab it, so the reach is 32 px, not 26: the closest a thief
+  // can stand to that desk is 26.4 px away, and at 26 the card was
+  // unreachable and the whole game unwinnable. (Found by the headless
+  // playtest: min approach distance 26.414 > 26.)
+  if (!world.keycard.taken && !p.inDuct && Math.hypot(world.keycard.x - p.x, world.keycard.y - p.y) < 32) {
     world.keycard.taken = true;
     world.keycardTaken = true;
     world.score += 50;
@@ -314,19 +315,34 @@ export function stepWorld(world, dt, input, audio) {
   // vault is open, so the thief cannot skip the crack and run.
   const ex = world.level.exit;
   const exitOpen = world.keycardTaken && (!vault || world.vaultOpen);
-  if (exitOpen && pointInRect(p.x, p.y, { x: ex.x - 6, y: ex.y - 6, w: ex.w + 12, h: ex.h + 12 })) {
+  if (exitOpen && inRect(p.x, p.y, { x: ex.x - 6, y: ex.y - 6, w: ex.w + 12, h: ex.h + 12 })) {
     winPhrase(audio);
     nextLevel(world);
     return;
   }
 
   // The guards: see, suspect, chase — and let you go when you vanish.
+  // One frozen sample of the thief per step: every guard reads the same
+  // snapshot, and none of them ever sees the live player.
+  const thief = sampleThief(p);
   let maxSuspicion = 0;
   let nearest = Infinity;
   for (const g of world.guards) {
     // A thief inside the duct is unseen — the duct walls hide them, and no
     // guard can spot, suspect, or catch what it cannot see.
-    const exposure = p.inDuct ? 0 : coneExposure(g, p, world.level);
+    const sight = senseSight(g, thief, world.level);
+    const exposure = sight.exposure;
+    // Noise: a pebble or a clunk names a tile. A patrolling guard that
+    // hears it walks over to look — walls muffle it, so a pebble in the
+    // next room may be ignored entirely.
+    if (world.pendingNoises.length > 0) {
+      const heard = senseNoise(g, world.pendingNoises, world.level);
+      if (heard.heard && !heard.strong && (g.state === 'patrol' || g.state === 'return')) {
+        g.lastKnown = heard.tile;
+        g.state = 'investigate';
+        g.stateT = 0;
+      }
+    }
     const near = Math.hypot(g.x - p.x, g.y - p.y);
     if (near < nearest) nearest = near;
     if (exposure > 0) {
@@ -501,6 +517,8 @@ export function stepWorld(world, dt, input, audio) {
     world.moteT = 0;
     spawnMote(world.particles, ex.x + ex.w / 2, ex.y + ex.h / 2);
   }
+  // Noise heard this step is spent — a pebble echoes once, not forever.
+  world.pendingNoises = [];
   stepParticles(world.particles, dt);
 }
 

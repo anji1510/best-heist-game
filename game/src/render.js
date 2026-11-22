@@ -1,53 +1,63 @@
-// MIDNIGHT VAULT renderer — plan-view logic, oblique 3D look. The floor stays
-// a readable plan, but every solid is extruded: a top face, a darker front
-// face and a side face, plus a cast shadow thrown to the south-east. Vision
-// cones are drawn as volumes of light lying on the floor, brighter near the
-// guard and fading with distance, so depth reads at a glance — even at 300 px.
-// Painter's order: floor, light pools, routes, duct, loot, vault, exit, cones,
-// then every solid and body sorted by its feet (y), then particles, then the HUD.
-import { CAMERA, COLORS, FLOOR, GUARD, LASER, SEARCHLIGHT, SHAKE, TILE, VIEW } from './config.js';
-import { clamp, easeOutCubic } from './motion.js';
-import { SCREEN_CAUGHT, SCREEN_LEVEL, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN } from './world.js';
+// MIDNIGHT VAULT painter — plan-view logic, oblique 3D look.
+//
+// The floor stays a readable plan, but every solid is extruded: a top face,
+// a darker front face and a side face, plus a cast shadow thrown to the
+// south-east. Light is drawn as volume lying on the floor, brighter near
+// its source and fading with distance, so depth reads at a glance — even
+// at 300 px. Guard sight is two wedges now, not one: a bright forward
+// wedge where the guard truly sees, and a wider, dimmer peripheral wedge
+// where it only notices — the same two wedges the sensing module tests,
+// so what you see is exactly what the guard sees.
+//
+// Paint order, back to front: floor, lamp pools, patrol routes, duct,
+// loot, vault, exit, all the light wedges and laser lines, then every
+// solid and body sorted by its feet (nearer things overlap farther ones),
+// then particles, then a soft vignette. The HUD paints last, unscaled
+// and unshaken, on top of everything.
+import { CAMERA, COLORS, FLOOR, GUARD, SEARCHLIGHT, SHAKE, TILE, VIEW } from './config.js';
+import { clamp } from './motion.js';
 import { drawHud } from './hud.js';
 import { popScale, settleScale } from './player.js';
+import { SENSE } from './sense.js';
 
-const WALL_H = 30;
-const CRATE_H = 26;
-const PILLAR_H = 38;
-const DESK_H = 20;
+// How tall each solid stands, in pixels of extrusion.
+const RISE = { wall: 30, crate: 26, pillar: 38, desk: 20 };
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
   return { canvas, ctx };
 }
 
-function shadow(ctx, x, y, w, h, dx, dy, alpha = 0.3) {
+// A flat drop shadow, offset south-east. Every solid and body gets one.
+function castShadow(ctx, x, y, w, h, dx, dy, alpha = 0.3) {
   ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
   ctx.fillRect(x + dx, y + dy, w, h);
 }
 
-// Perspective depth (guanmo layering + motion-design parallax): props near
-// the frame bottom (close to the viewer) render ~1.1x, props near the top
-// (far) ~0.9x, each scaled around its own feet so the floor plan stays true.
-// Overlap + scale gradient = depth without any projection change.
-function depthScale(y) {
+// Perspective depth: props near the frame bottom (close to the viewer)
+// render ~1.1x, props near the top (far) ~0.9x, each scaled around its own
+// feet so the floor plan stays true. Overlap plus the scale gradient is
+// depth without any projection change.
+function heightScale(y) {
   return 0.9 + 0.2 * clamp(y / 720, 0, 1);
 }
 
-function depthWrap(ctx, fx, fy, draw) {
-  const s = depthScale(fy);
+function withHeight(ctx, fx, fy, paint) {
+  const s = heightScale(fy);
   ctx.save();
   ctx.translate(fx, fy);
   ctx.scale(s, s);
   ctx.translate(-fx, -fy);
-  draw();
+  paint();
   ctx.restore();
 }
 
-// Extrude a rectangle upward: top face, front face (south), right face (east).
-// The front face is the darkest, the top the lightest — the volume reads.
-function extrude(ctx, r, h, top, front, side) {
-  shadow(ctx, r.x, r.y, r.w, r.h, 14, 20, 0.38); // deeper, longer cast shadow
+// Extrude a rectangle upward: top face, front face (south), right face
+// (east). The front face is the darkest, the top the lightest — the volume
+// reads. A thin lit edge on the top's south rim is the lamp light catching
+// the rim.
+function block3d(ctx, r, h, top, front, side) {
+  castShadow(ctx, r.x, r.y, r.w, r.h, 14, 20, 0.38);
   ctx.fillStyle = side;
   ctx.beginPath();
   ctx.moveTo(r.x + r.w, r.y);
@@ -60,35 +70,75 @@ function extrude(ctx, r, h, top, front, side) {
   ctx.fillRect(r.x, r.y + r.h - h, r.w, h);
   ctx.fillStyle = top;
   ctx.fillRect(r.x, r.y - h, r.w, r.h);
-  // A thin lit edge on the top's south rim — the lamp light catching the rim.
   ctx.fillStyle = 'rgba(255, 230, 170, 0.45)';
   ctx.fillRect(r.x, r.y - h, r.w, 3);
 }
 
-function drawFloor(ctx, world, t) {
+// Fill one wedge of light from (cx, cy): a radial gradient, bright at the
+// source, gone at the range. `lift` draws a second, higher wedge offset
+// up-left at low alpha, so the beam has height instead of lying flat.
+function wedge(ctx, cx, cy, angle, half, range, color, lift = 0) {
+  for (let layer = 0; layer <= (lift > 0 ? 1 : 0); layer += 1) {
+    const ox = -lift * layer * 0.7;
+    const oy = -lift * layer;
+    const alpha = layer === 0 ? 1 : 0.45;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const grad = ctx.createRadialGradient(cx + ox, cy + oy, 10, cx + ox, cy + oy, range);
+    grad.addColorStop(0, color);
+    grad.addColorStop(0.75, color);
+    grad.addColorStop(1, 'rgba(255, 200, 100, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(cx + ox, cy + oy);
+    ctx.arc(cx + ox, cy + oy, range, angle - half, angle + half);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// A guard's beam colour, interpolated by suspicion — pale gold while calm,
+// amber while wondering, red once sure. Never snaps between states.
+function guardBeamColor(suspicion) {
+  const pale = [255, 214, 130, 0.30];
+  const amber = [255, 170, 60, 0.42];
+  const red = [255, 70, 60, 0.48];
+  const blend = (u, v, t) => u.map((x, i) => x + (v[i] - x) * t);
+  const c = suspicion < 0.45
+    ? blend(pale, amber, suspicion / 0.45)
+    : blend(amber, red, (suspicion - 0.45) / 0.55);
+  return `rgba(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])}, ${c[3]})`;
+}
+
+function paintFloor(ctx, world) {
   const level = world.level;
   ctx.fillStyle = COLORS.floorA;
   ctx.fillRect(0, 0, VIEW.width, VIEW.height);
-  // Big 64 px marble tiles with grout lines: texture you can read, not noise.
+  // Big 64 px marble tiles: texture you can read, not noise.
   for (let ty = 0; ty < 22; ty += 1) {
     for (let tx = 0; tx < 40; tx += 1) {
-      const x = tx * TILE;
-      const y = FLOOR.y + ty * TILE;
       ctx.fillStyle = (tx + ty) % 2 === 0 ? COLORS.floorA : COLORS.floorB;
-      ctx.fillRect(x, y, TILE, TILE);
+      ctx.fillRect(tx * TILE, FLOOR.y + ty * TILE, TILE, TILE);
     }
   }
   ctx.strokeStyle = COLORS.grout;
   ctx.lineWidth = 1;
   for (let i = 0; i <= 40; i += 1) {
-    ctx.beginPath(); ctx.moveTo(i * TILE, FLOOR.y); ctx.lineTo(i * TILE, FLOOR.y + 704); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(i * TILE, FLOOR.y);
+    ctx.lineTo(i * TILE, FLOOR.y + 704);
+    ctx.stroke();
   }
   for (let i = 0; i <= 22; i += 1) {
-    ctx.beginPath(); ctx.moveTo(0, FLOOR.y + i * TILE); ctx.lineTo(1280, FLOOR.y + i * TILE); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, FLOOR.y + i * TILE);
+    ctx.lineTo(1280, FLOOR.y + i * TILE);
+    ctx.stroke();
   }
-  // Carpets: broad colour fields with a border — the room's identity at a glance.
-  // A dark band on the far edge and a light one on the near edge fake the
-  // perspective: the runner lies on the floor and runs away from you.
+  // Carpets: broad colour fields with a border — the room's identity at a
+  // glance. A dark band on the far edge and a light one on the near edge
+  // fake the perspective: the runner lies on the floor and runs away.
   for (const c of level.carpets) {
     ctx.fillStyle = c.color === 'red' ? COLORS.carpet : COLORS.carpetBlue;
     ctx.fillRect(c.x, c.y, c.w, c.h);
@@ -136,7 +186,7 @@ function drawFloor(ctx, world, t) {
   ctx.letterSpacing = '0px';
 }
 
-function drawLampPools(ctx, world, t) {
+function paintLampPools(ctx, world, t) {
   // Warm pools of light on the floor: danger ground, glowing softly.
   // On alarm the lamps flicker hard — the light itself tells the story.
   for (const l of world.level.lamps) {
@@ -155,7 +205,7 @@ function drawLampPools(ctx, world, t) {
   }
 }
 
-function drawRoutes(ctx, world) {
+function paintRoutes(ctx, world) {
   // Patrol routes, dotted with arrowheads: the route you can learn.
   ctx.strokeStyle = 'rgba(232, 228, 216, 0.30)';
   ctx.fillStyle = 'rgba(232, 228, 216, 0.35)';
@@ -192,73 +242,50 @@ function drawRoutes(ctx, world) {
   ctx.setLineDash([]);
 }
 
-// A vision cone as a volume of light: a floor wedge, brighter near the guard,
-// plus a second, higher wedge offset up-left at low alpha, so the beam has
-// height instead of lying flat like paint. The colour is interpolated by
-// suspicion — the cone warms from pale gold to amber to red as the guard grows
-// sure, never snapping between states. The cone angle lags the body turn
-// (follow-through), so a turn reads as a sweep.
-function coneFill(suspicion) {
-  const a = [255, 214, 130, 0.30];
-  const b = [255, 170, 60, 0.42];
-  const c = [255, 70, 60, 0.48];
-  const mix = (u, v, t) => u.map((x, i) => x + (v[i] - x) * t);
-  const col = suspicion < 0.45 ? mix(a, b, suspicion / 0.45) : mix(b, c, (suspicion - 0.45) / 0.55);
-  return `rgba(${Math.round(col[0])}, ${Math.round(col[1])}, ${Math.round(col[2])}, ${col[3]})`;
-}
-
-function drawCone(ctx, g) {
-  const half = g.state === 'alert'
+// A guard's sight, painted as it is tested: two wedges sharing one facing.
+// The wide peripheral wedge first — dim, flat, half the reach — then the
+// bright forward wedge with its lifted second layer. The cone angle lags
+// the body turn (follow-through), so a turn reads as a sweep. Bright rims
+// on the forward wedge's edges catch the dark.
+function paintGuardCone(ctx, g) {
+  const fwdHalf = g.state === 'alert'
     ? GUARD.alertHalfAngle
-    : g.state === 'suspicious' ? 0.36 : GUARD.viewHalfAngle;
+    : g.state === 'suspicious' ? GUARD.suspectHalfAngle : SENSE.fwdHalf;
   const range = GUARD.viewRange;
   const angle = g.coneAngle ?? g.facing;
-  const color = coneFill(g.suspicion);
+  const color = guardBeamColor(g.suspicion);
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  wedge(ctx, g.x, g.y, angle, SENSE.periHalf, range * SENSE.periRange, color, 0);
+  ctx.restore();
   const lift = g.state === 'alert' ? 7 : 5;
-  for (let layer = 0; layer < 2; layer += 1) {
-    const ox = -lift * layer * 0.7;
-    const oy = -lift * layer;
-    const alpha = layer === 0 ? 1 : 0.45;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    const grad = ctx.createRadialGradient(g.x + ox, g.y + oy, 10, g.x + ox, g.y + oy, range);
-    grad.addColorStop(0, color);
-    grad.addColorStop(0.75, color);
-    grad.addColorStop(1, 'rgba(255, 200, 100, 0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(g.x + ox, g.y + oy);
-    ctx.arc(g.x + ox, g.y + oy, range, angle - half, angle + half);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-  // Bright rim on the cone's edges — the beam's sides catch the dark.
+  wedge(ctx, g.x, g.y, angle, fwdHalf, range, color, lift);
   ctx.strokeStyle = g.suspicion >= 0.45 ? 'rgba(255, 120, 70, 0.5)' : 'rgba(255, 220, 140, 0.35)';
   ctx.lineWidth = 1.5;
   for (const s of [-1, 1]) {
     ctx.beginPath();
     ctx.moveTo(g.x, g.y);
-    ctx.lineTo(g.x + Math.cos(angle + s * half) * range, g.y + Math.sin(angle + s * half) * range);
+    ctx.lineTo(g.x + Math.cos(angle + s * fwdHalf) * range, g.y + Math.sin(angle + s * fwdHalf) * range);
     ctx.stroke();
   }
 }
 
-// A camera beam: same volume-of-light language as a guard cone, but cold
-// magenta and thinner — the sweep reads as a machine's, not a person's.
-// The beam warms toward red as the camera's suspicion fills, and a bright
-// scan line runs down its centre so the sweep's direction is unmistakable.
-function camConeFill(suspicion) {
-  const a = [255, 90, 200, 0.30];
-  const b = [255, 60, 110, 0.48];
-  const col = a.map((x, i) => x + (b[i] - x) * suspicion);
-  return `rgba(${Math.round(col[0])}, ${Math.round(col[1])}, ${Math.round(col[2])}, ${col[3]})`;
+// A camera beam: the same volume-of-light language as a guard cone, but
+// cold magenta and thinner — the sweep reads as a machine's, not a
+// person's. The beam warms toward red as the camera's suspicion fills,
+// and a bright scan line runs down its centre so the sweep's direction
+// is unmistakable.
+function camBeamColor(suspicion) {
+  const cold = [255, 90, 200, 0.30];
+  const hot = [255, 60, 110, 0.48];
+  const c = cold.map((x, i) => x + (hot[i] - x) * suspicion);
+  return `rgba(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])}, ${c[3]})`;
 }
 
-function drawCamCone(ctx, cam) {
+function paintCamBeam(ctx, cam) {
   const range = CAMERA.range;
   const half = CAMERA.halfAngle;
-  const color = camConeFill(cam.suspicion);
+  const color = camBeamColor(cam.suspicion);
   const grad = ctx.createRadialGradient(cam.x, cam.y, 8, cam.x, cam.y, range);
   grad.addColorStop(0, color);
   grad.addColorStop(0.75, color);
@@ -289,13 +316,13 @@ function drawCamCone(ctx, cam) {
 
 // A laser grid: straight magenta lines across a corridor, on a clock.
 // The beams are lines, never cones — the shape is what tells them apart
-// from the cameras at a glance. Off: only a faint dotted guide line, so the
-// thief can see where the beams will be. Warn: the beams flicker in, and
-// the emitter dots blink red. On: a bright core with a soft glow, warming
-// toward red as the grid's suspicion fills.
-function drawLaserBeams(ctx, grid, t) {
-  const hot = grid.suspicion; // 0..1 — the beam warms as the grid grows sure
-  const core = `rgba(${Math.round(255)}, ${Math.round(138 - 78 * hot)}, ${Math.round(216 - 106 * hot)}, 1)`;
+// from the cameras at a glance. Off: only a faint dotted guide line, so
+// the thief can see where the beams will be. Warn: the beams flicker in,
+// and the emitter dots blink red. On: a bright core with a soft glow,
+// warming toward red as the grid's suspicion fills.
+function paintLaserLines(ctx, grid, t) {
+  const hot = grid.suspicion;
+  const core = `rgba(255, ${Math.round(138 - 78 * hot)}, ${Math.round(216 - 106 * hot)}, 1)`;
   for (const b of grid.beams) {
     if (grid.state === 'off') {
       ctx.save();
@@ -328,15 +355,15 @@ function drawLaserBeams(ctx, grid, t) {
   }
 }
 
-// The emitter and receiver posts: small wall boxes at each beam's ends, with
-// a tally dot that is dim when the grid is dark, blinking red while it warns,
-// and solid magenta while the beams are live — the machine is visible, so
-// the beams are never a surprise.
-function drawLaserPosts(ctx, grid, t) {
+// The emitter and receiver posts: small wall boxes at each beam's ends,
+// with a tally dot that is dim when the grid is dark, blinking red while
+// it warns, and solid magenta while the beams are live — the machine is
+// visible, so the beams are never a surprise.
+function paintLaserPosts(ctx, grid, t) {
   for (const b of grid.beams) {
     for (const [ex, ey] of [[b.x1, b.y1], [b.x2, b.y2]]) {
       const ang = Math.atan2(b.y2 - b.y1, b.x2 - b.x1);
-      shadow(ctx, ex - 7, ey - 4, 14, 8, 3, 4, 0.35);
+      castShadow(ctx, ex - 7, ey - 4, 14, 8, 3, 4, 0.35);
       ctx.save();
       ctx.translate(ex, ey);
       ctx.rotate(ang);
@@ -360,10 +387,10 @@ function drawLaserPosts(ctx, grid, t) {
 }
 
 // The camera itself: a small wall-mounted box with a lens that follows the
-// beam, a red tally dot that blinks while it sweeps, and a CAM tag —
-// the machine is visible, so its beam is never a surprise.
-function drawCamera(ctx, cam, t) {
-  shadow(ctx, cam.x - 11, cam.y - 6, 22, 12, 5, 7, 0.35);
+// beam, a red tally dot that blinks while it sweeps, and a CAM tag — the
+// machine is visible, so its beam is never a surprise.
+function paintCamera(ctx, cam, t) {
+  castShadow(ctx, cam.x - 11, cam.y - 6, 22, 12, 5, 7, 0.35);
   ctx.save();
   ctx.translate(cam.x, cam.y);
   ctx.rotate(cam.angle);
@@ -397,15 +424,16 @@ function drawCamera(ctx, cam, t) {
   }
 }
 
-// A searchlight beam: the same volume-of-light language as a guard cone, but
-// warm white, wide and long — a flood sweeping the floor, not a needle. The
-// beam warms toward amber as the searchlight's suspicion fills, and a bright
-// core line runs down its centre so the sweep's direction is unmistakable.
-function drawSearchlightCone(ctx, sl) {
+// A searchlight beam: the same volume-of-light language as a guard cone,
+// but warm white, wide and long — a flood sweeping the floor, not a
+// needle. The beam warms toward amber as the searchlight's suspicion
+// fills, and a bright core line runs down its centre so the sweep's
+// direction is unmistakable.
+function paintSearchlightBeam(ctx, sl) {
   const range = SEARCHLIGHT.range;
   const half = SEARCHLIGHT.halfAngle;
-  const hot = sl.suspicion; // 0..1 — the beam warms as the light grows sure
-  const color = `rgba(${Math.round(255)}, ${Math.round(248 - 30 * hot)}, ${Math.round(225 - 90 * hot)}, ${0.36 + 0.14 * hot})`;
+  const hot = sl.suspicion;
+  const color = `rgba(255, ${Math.round(248 - 30 * hot)}, ${Math.round(225 - 90 * hot)}, ${0.36 + 0.14 * hot})`;
   const grad = ctx.createRadialGradient(sl.x, sl.y, 8, sl.x, sl.y, range);
   grad.addColorStop(0, color);
   grad.addColorStop(0.7, color);
@@ -448,15 +476,15 @@ function drawSearchlightCone(ctx, sl) {
 // The searchlight itself: a small rooftop tower on the north wall, a mast
 // with a lamp head that turns with the beam, and a warm tally dot — the
 // machine is visible, so its beam is never a surprise.
-function drawSearchlight(ctx, sl, t) {
-  shadow(ctx, sl.x - 9, sl.y - 5, 18, 10, 4, 6, 0.35);
+function paintSearchlight(ctx, sl, t) {
+  castShadow(ctx, sl.x - 9, sl.y - 5, 18, 10, 4, 6, 0.35);
   ctx.save();
   ctx.translate(sl.x, sl.y);
   ctx.fillStyle = COLORS.slBody;
-  ctx.fillRect(-9, -5, 18, 10); // the tower base, bolted to the wall
+  ctx.fillRect(-9, -5, 18, 10);
   ctx.rotate(sl.angle);
   ctx.fillStyle = '#2c2820';
-  ctx.fillRect(2, -4, 14, 8); // the lamp head, turning with the beam
+  ctx.fillRect(2, -4, 14, 8);
   ctx.fillStyle = COLORS.slLens;
   ctx.beginPath();
   ctx.arc(16, 0, 4, 0, Math.PI * 2);
@@ -486,12 +514,12 @@ function drawSearchlight(ctx, sl, t) {
   }
 }
 
-function drawLoot(ctx, world, t) {
+function paintLoot(ctx, world, t) {
   for (const l of world.loot) {
     if (l.taken) continue;
     if (l.vault) {
       // Vault gold: a gold bar on a dark plinth — a small 3D ingot with a glint.
-      shadow(ctx, l.x - 9, l.y - 5, 18, 10, 4, 5, 0.35);
+      castShadow(ctx, l.x - 9, l.y - 5, 18, 10, 4, 5, 0.35);
       ctx.fillStyle = '#7a5c1e';
       ctx.fillRect(l.x - 9, l.y - 4, 18, 8);
       ctx.fillStyle = COLORS.lootGold;
@@ -512,7 +540,7 @@ function drawLoot(ctx, world, t) {
       continue;
     }
     // A cash bundle: green paper banded in gold, with a glint — money you can see.
-    shadow(ctx, l.x - 10, l.y - 6, 20, 12, 4, 5, 0.35);
+    castShadow(ctx, l.x - 10, l.y - 6, 20, 12, 4, 5, 0.35);
     ctx.fillStyle = '#1e4a30';
     ctx.fillRect(l.x - 10, l.y - 6, 20, 12);
     ctx.fillStyle = '#2e6b44';
@@ -529,7 +557,7 @@ function drawLoot(ctx, world, t) {
   }
   if (!world.keycard.taken) {
     const k = world.keycard;
-    shadow(ctx, k.x - 11, k.y - 7, 22, 14, 4, 5, 0.35);
+    castShadow(ctx, k.x - 11, k.y - 7, 22, 14, 4, 5, 0.35);
     ctx.fillStyle = '#12303f';
     ctx.fillRect(k.x - 11, k.y - 7, 22, 14);
     ctx.fillStyle = COLORS.keycard;
@@ -544,12 +572,12 @@ function drawLoot(ctx, world, t) {
 // swings aside and gold light spills out of the dark inside. The dial's
 // needle follows the crack state, so the door shows the minigame even from
 // across the room.
-function drawVault(ctx, world, t) {
+function paintVault(ctx, world) {
   const v = world.level.vault;
   if (!v) return;
   const open = world.vaultOpen;
   const crack = world.crack;
-  shadow(ctx, v.x - v.r, v.y - v.r, v.r * 2, v.r * 2, 10, 12, 0.4);
+  castShadow(ctx, v.x - v.r, v.y - v.r, v.r * 2, v.r * 2, 10, 12, 0.4);
   // The dark mouth behind the door, once it opens.
   ctx.fillStyle = '#0a0c14';
   ctx.beginPath();
@@ -622,11 +650,14 @@ function drawVault(ctx, world, t) {
   ctx.fillText(open ? '— OPEN' : world.crack.active ? '· CRACKING…' : '· LOCKED', v.x - v.r - 12, v.y + 24);
 }
 
-function drawExit(ctx, world, t) {
+function paintExit(ctx, world, t) {
   const ex = world.level.exit;
   const cx = ex.x + ex.w / 2;
   const cy = ex.y + ex.h / 2;
   const open = world.keycardTaken && (!world.level.vault || world.vaultOpen);
+  // A door near the top of the frame gets its label BELOW it: the HUD bar
+  // would eat a label drawn above a high door.
+  const below = cy < 220;
   if (ex.van) {
     // The getaway van: dark green, parked at the east door with its lights
     // on, nose east. It only reads as the way out once the vault is open —
@@ -639,7 +670,7 @@ function drawExit(ctx, world, t) {
     ctx.beginPath();
     ctx.arc(cx, cy, 130, 0, Math.PI * 2);
     ctx.fill();
-    shadow(ctx, cx - 34, cy - 26, 68, 52, 8, 10, 0.4);
+    castShadow(ctx, cx - 34, cy - 26, 68, 52, 8, 10, 0.4);
     ctx.fillStyle = open ? COLORS.vanBody : '#22332a';
     ctx.beginPath();
     ctx.moveTo(cx - 34, cy - 26);
@@ -671,9 +702,6 @@ function drawExit(ctx, world, t) {
     ctx.font = 'bold 17px Georgia, serif';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    // A door near the top of the frame gets its label BELOW it: the HUD bar
-    // would eat a label drawn above a high door.
-    const below = cy < 220;
     ctx.fillText('VAN', ex.x - 12, below ? cy + 44 : cy - 34);
     ctx.font = 'bold 12px Georgia, serif';
     ctx.fillStyle = open ? 'rgba(55, 224, 138, 0.9)' : 'rgba(232, 228, 216, 0.55)';
@@ -689,11 +717,9 @@ function drawExit(ctx, world, t) {
   ctx.beginPath();
   ctx.arc(cx, cy, 120, 0, Math.PI * 2);
   ctx.fill();
-  extrude(ctx, ex, 30, open ? '#2f7a52' : '#274a38', '#16261d', '#1e3328');
+  block3d(ctx, ex, 30, open ? '#2f7a52' : '#274a38', '#16261d', '#1e3328');
   // The label sits LEFT of the door, right-aligned — a door at the canvas
-  // edge must never clip its own name. A door near the top of the frame gets
-  // its label BELOW it: the HUD bar would eat a label drawn above a high door.
-  const below = cy < 220;
+  // edge must never clip its own name.
   ctx.fillStyle = open ? COLORS.exitGlow : 'rgba(55, 224, 138, 0.6)';
   ctx.font = 'bold 17px Georgia, serif';
   ctx.textAlign = 'right';
@@ -704,40 +730,40 @@ function drawExit(ctx, world, t) {
   ctx.fillText(open ? '— OPEN' : '· LOCKED', ex.x - 12, below ? cy + 62 : cy - 16);
 }
 
-function drawCrate(ctx, c) {
-  extrude(ctx, c, CRATE_H, COLORS.crateTop, COLORS.crateFront, COLORS.crateSide);
+function paintCrate(ctx, c) {
+  block3d(ctx, c, RISE.crate, COLORS.crateTop, COLORS.crateFront, COLORS.crateSide);
   ctx.strokeStyle = 'rgba(0,0,0,0.35)';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(c.x + 4, c.y - CRATE_H + 4);
-  ctx.lineTo(c.x + c.w - 4, c.y - CRATE_H + c.h - 4);
-  ctx.moveTo(c.x + c.w - 4, c.y - CRATE_H + 4);
-  ctx.lineTo(c.x + 4, c.y - CRATE_H + c.h - 4);
+  ctx.moveTo(c.x + 4, c.y - RISE.crate + 4);
+  ctx.lineTo(c.x + c.w - 4, c.y - RISE.crate + c.h - 4);
+  ctx.moveTo(c.x + c.w - 4, c.y - RISE.crate + 4);
+  ctx.lineTo(c.x + 4, c.y - RISE.crate + c.h - 4);
   ctx.stroke();
 }
 
-function drawPillar(ctx, p) {
-  shadow(ctx, p.x - 12, p.y - 6, 24, 12, 8, 10, 0.35);
+function paintPillar(ctx, p) {
+  castShadow(ctx, p.x - 12, p.y - 6, 24, 12, 8, 10, 0.35);
   ctx.fillStyle = COLORS.pillarBody;
-  ctx.fillRect(p.x - 11, p.y - PILLAR_H, 22, PILLAR_H + 4);
+  ctx.fillRect(p.x - 11, p.y - RISE.pillar, 22, RISE.pillar + 4);
   ctx.fillStyle = COLORS.pillarTop;
   ctx.beginPath();
-  ctx.ellipse(p.x, p.y - PILLAR_H, 13, 7, 0, 0, Math.PI * 2);
+  ctx.ellipse(p.x, p.y - RISE.pillar, 13, 7, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = 'rgba(255,255,255,0.18)';
   ctx.beginPath();
-  ctx.ellipse(p.x - 4, p.y - PILLAR_H - 2, 5, 2.5, 0, 0, Math.PI * 2);
+  ctx.ellipse(p.x - 4, p.y - RISE.pillar - 2, 5, 2.5, 0, 0, Math.PI * 2);
   ctx.fill();
 }
 
-function drawDesk(ctx, d) {
-  extrude(ctx, d, DESK_H, COLORS.deskTop, COLORS.deskFront, '#2c3550');
+function paintDesk(ctx, d) {
+  block3d(ctx, d, RISE.desk, COLORS.deskTop, COLORS.deskFront, '#2c3550');
   ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.fillRect(d.x + 4, d.y - DESK_H + 3, d.w - 8, 3);
+  ctx.fillRect(d.x + 4, d.y - RISE.desk + 3, d.w - 8, 3);
 }
 
-function drawPlant(ctx, p, t) {
-  shadow(ctx, p.x - 10, p.y - 4, 20, 10, 5, 6, 0.35);
+function paintPlant(ctx, p, t) {
+  castShadow(ctx, p.x - 10, p.y - 4, 20, 10, 5, 6, 0.35);
   ctx.fillStyle = COLORS.plantPot;
   ctx.beginPath();
   ctx.moveTo(p.x - 10, p.y - 2);
@@ -755,7 +781,7 @@ function drawPlant(ctx, p, t) {
   }
 }
 
-function drawGuard(ctx, g, t) {
+function paintGuard(ctx, g, t) {
   const bob = Math.sin(g.bob) * 1.5;
   const x = g.x;
   const y = g.y + bob * 0.3;
@@ -774,7 +800,7 @@ function drawGuard(ctx, g, t) {
     ctx.stroke();
     ctx.restore();
   }
-  shadow(ctx, x - 12, y - 6, 24, 12, 7, 9, 0.35);
+  castShadow(ctx, x - 12, y - 6, 24, 12, 7, 9, 0.35);
   // Body: a tall figure in a lighter uniform — coat, shoulders, cap — with a
   // red trim and a pale outline that keeps the guard visible against the floor.
   ctx.fillStyle = '#414a66';
@@ -839,7 +865,7 @@ function drawGuard(ctx, g, t) {
 // not another beam. The grates are the only way in or out, so they are drawn
 // as real hatches (frame + crossbars + a DUCT tag), big enough to read at
 // 300 px. The duct is floor-level, so it paints before the loot and cones.
-function drawDuct(ctx, duct) {
+function paintDuct(ctx, duct) {
   const r = duct.rect;
   ctx.fillStyle = COLORS.ductChannel;
   ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -872,7 +898,7 @@ function drawDuct(ctx, duct) {
     // reads as a slab set into the duct, not a flat decal.
     ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
     ctx.fillRect(gx - 15, gy - 13 + 6, 30, 26);
-    shadow(ctx, gx - 15, gy - 13, 30, 26, 3, 4, 0.4);
+    castShadow(ctx, gx - 15, gy - 13, 30, 26, 3, 4, 0.4);
     ctx.fillStyle = COLORS.ductGrateDark;
     ctx.fillRect(gx - 15, gy - 13, 30, 26);
     ctx.fillStyle = COLORS.ductGrate;
@@ -888,11 +914,11 @@ function drawDuct(ctx, duct) {
   }
 }
 
-function drawPlayer(ctx, p, t) {
+function paintPlayer(ctx, p, t) {
   const scale = popScale(p) * settleScale(p) * (p.inDuct ? 0.8 : 1); // crouched small in the duct
   const x = p.x;
   const y = p.y;
-  shadow(ctx, x - 11, y - 5, 22, 11, 6, 8, p.inDuct ? 0.6 : 0.35); // darker shadow in the duct — deeper in the dark
+  castShadow(ctx, x - 11, y - 5, 22, 11, 6, 8, p.inDuct ? 0.6 : 0.35); // darker shadow in the duct — deeper in the dark
   const bob = p.moving ? Math.sin(t * (p.sneaking ? 8 : 12)) * 1.2 : 0;
   ctx.save();
   ctx.translate(x, y + bob * 0.3);
@@ -930,7 +956,7 @@ function drawPlayer(ctx, p, t) {
   }
 }
 
-function drawParticles(ctx, world) {
+function paintParticles(ctx, world) {
   for (const p of world.particles.list) {
     const a = 1 - p.t / p.life;
     if (p.kind === 'dust') {
@@ -1012,37 +1038,38 @@ export function drawWorld(ctx, world, screen, t) {
     const s = world.shake * world.shake * SHAKE.maxPx;
     ctx.translate(Math.sin(t * 47.3) * s, Math.cos(t * 39.7) * s);
   }
-  drawFloor(ctx, world, t);
-  drawLampPools(ctx, world, t);
-  drawRoutes(ctx, world);
-  for (const v of world.ducts) drawDuct(ctx, v); // the duct is floor-level, under the loot and cones
-  drawLoot(ctx, world, t);
-  drawVault(ctx, world, t);
-  drawExit(ctx, world, t);
-  for (const g of world.guards) drawCone(ctx, g);
-  for (const cam of world.cameras) drawCamCone(ctx, cam);
-  for (const grid of world.lasers) drawLaserBeams(ctx, grid, t);
-  for (const sl of world.searchlights) drawSearchlightCone(ctx, sl);
-  // Solids and bodies, sorted by their feet so nearer things overlap farther ones.
-  // Freestanding props and bodies render through depthWrap (perspective scale
-  // by feet y); wall-mounted machines and walls stay unscaled so the room's
-  // grid never drifts.
-  const solids = [];
-  for (const c of level.crates) solids.push({ y: c.y + c.h, draw: () => depthWrap(ctx, c.x + c.w / 2, c.y + c.h, () => drawCrate(ctx, c)) });
-  for (const p of level.pillars) solids.push({ y: p.y, draw: () => depthWrap(ctx, p.x, p.y, () => drawPillar(ctx, p)) });
-  for (const d of level.desks) solids.push({ y: d.y + d.h, draw: () => depthWrap(ctx, d.x + d.w / 2, d.y + d.h, () => drawDesk(ctx, d)) });
-  for (const p of level.plants) solids.push({ y: p.y + 8, draw: () => depthWrap(ctx, p.x, p.y + 8, () => drawPlant(ctx, p, t)) });
-  for (const g of world.guards) solids.push({ y: g.y, draw: () => depthWrap(ctx, g.x, g.y, () => drawGuard(ctx, g, t)) });
-  for (const cam of world.cameras) solids.push({ y: cam.y, draw: () => drawCamera(ctx, cam, t) });
-  for (const grid of world.lasers) solids.push({ y: grid.beams[0].y2, draw: () => drawLaserPosts(ctx, grid, t) });
-  for (const sl of world.searchlights) solids.push({ y: sl.y, draw: () => drawSearchlight(ctx, sl, t) });
-  solids.push({ y: world.player.y, draw: () => depthWrap(ctx, world.player.x, world.player.y, () => drawPlayer(ctx, world.player, t)) });
-  // Walls join the same sort, keyed by their base — a guard south of a wall
+  paintFloor(ctx, world);
+  paintLampPools(ctx, world, t);
+  paintRoutes(ctx, world);
+  for (const v of world.ducts) paintDuct(ctx, v); // the duct is floor-level, under the loot and cones
+  paintLoot(ctx, world, t);
+  paintVault(ctx, world);
+  paintExit(ctx, world, t);
+  for (const g of world.guards) paintGuardCone(ctx, g);
+  for (const cam of world.cameras) paintCamBeam(ctx, cam);
+  for (const grid of world.lasers) paintLaserLines(ctx, grid, t);
+  for (const sl of world.searchlights) paintSearchlightBeam(ctx, sl);
+  // Solids and bodies, queued by their feet so nearer things overlap
+  // farther ones. Freestanding props and bodies render through withHeight
+  // (perspective scale by feet y); wall-mounted machines and walls stay
+  // unscaled so the room's grid never drifts.
+  const queue = [];
+  const at = (y, paint) => queue.push({ y, paint });
+  for (const c of level.crates) at(c.y + c.h, () => withHeight(ctx, c.x + c.w / 2, c.y + c.h, () => paintCrate(ctx, c)));
+  for (const p of level.pillars) at(p.y, () => withHeight(ctx, p.x, p.y, () => paintPillar(ctx, p)));
+  for (const d of level.desks) at(d.y + d.h, () => withHeight(ctx, d.x + d.w / 2, d.y + d.h, () => paintDesk(ctx, d)));
+  for (const p of level.plants) at(p.y + 8, () => withHeight(ctx, p.x, p.y + 8, () => paintPlant(ctx, p, t)));
+  for (const g of world.guards) at(g.y, () => withHeight(ctx, g.x, g.y, () => paintGuard(ctx, g, t)));
+  for (const cam of world.cameras) at(cam.y, () => paintCamera(ctx, cam, t));
+  for (const grid of world.lasers) at(grid.beams[0].y2, () => paintLaserPosts(ctx, grid, t));
+  for (const sl of world.searchlights) at(sl.y, () => paintSearchlight(ctx, sl, t));
+  at(world.player.y, () => withHeight(ctx, world.player.x, world.player.y, () => paintPlayer(ctx, world.player, t)));
+  // Walls join the same queue, keyed by their base — a guard south of a wall
   // stands in front of it and must be drawn over its front face.
-  for (const w of level.walls) solids.push({ y: w.y + w.h, draw: () => extrude(ctx, w, WALL_H, COLORS.wallTop, COLORS.wallFront, COLORS.wallSide) });
-  solids.sort((a, b) => a.y - b.y);
-  for (const s of solids) s.draw();
-  drawParticles(ctx, world);
+  for (const w of level.walls) at(w.y + w.h, () => block3d(ctx, w, RISE.wall, COLORS.wallTop, COLORS.wallFront, COLORS.wallSide));
+  queue.sort((a, b) => a.y - b.y);
+  for (const job of queue) job.paint();
+  paintParticles(ctx, world);
   // A soft vignette: the room is dark at the edges, lit where the lamps are.
   const v = ctx.createRadialGradient(640, 360, 300, 640, 360, 760);
   v.addColorStop(0, 'rgba(0,0,0,0)');

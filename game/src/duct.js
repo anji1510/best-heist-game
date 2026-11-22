@@ -7,7 +7,7 @@
 // way in or out is through a grate — the collision code enforces it, no
 // special-case movement is needed. A thief who walks north into the south
 // wall anywhere else just stops at the wall face.
-import { pointInRect } from './vision.js';
+import { inRect } from './sense.js';
 
 export function createDuct(def, index) {
   return {
@@ -22,7 +22,7 @@ export function createDuct(def, index) {
 // Is this point inside the duct? The world asks this once per step, before
 // the thief moves, so the crawl speed applies from the first step inside.
 export function inDuct(duct, x, y) {
-  return pointInRect(x, y, duct.rect);
+  return inRect(x, y, duct.rect);
 }
 
 export function ductAt(ducts, x, y) {

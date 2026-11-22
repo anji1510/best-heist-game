@@ -118,10 +118,14 @@ export const LEVELS = [
       // The service duct: a channel at tile y 2, enclosed by real walls —
       // its north wall, its south wall with two grate gaps, and caps at both
       // ends. The only way in or out is through a grate at tile x 3–4
-      // (entry, west) or x 35–36 (exit, east); the collision code enforces
-      // it, so no special-case movement is needed anywhere else.
+      // (entry, west) or x 33–36 (exit, east); the collision code enforces
+      // it, so no special-case movement is needed anywhere else. The east
+      // gap is four tiles wide on purpose: the vault door stands just south
+      // of it, and a two-tile gap would wedge the thief in the pocket
+      // between the wall's east end and the door — no way south, no way
+      // west, only back north into the duct.
       r(3, 1, 34, 1), // duct north wall
-      r(5, 3, 30, 1), // duct south wall (gaps at x 3–4 and x 35–36)
+      r(5, 3, 28, 1), // duct south wall (gaps at x 3–4 and x 33–36)
       r(2, 2, 1, 1), // duct west cap
       r(37, 2, 1, 1), // duct east cap
     ],
